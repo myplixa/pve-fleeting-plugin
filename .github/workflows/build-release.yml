@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make unit-test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os_archs:
+          - "darwin/amd64 darwin/arm64"
+          - "freebsd/amd64 freebsd/arm64"
+          - "freebsd/386 freebsd/arm"
+          - "linux/amd64 linux/arm64"
+          - "linux/arm linux/s390x"
+          - "linux/ppc64le linux/386"
+          - "windows/amd64.exe windows/386.exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          OS_ARCHS: ${{ matrix.os_archs }}
+        run: make all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ strategy.job-index }}
+          path: out/fleeting-plugin-*
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          pattern: binaries-*
+          merge-multiple: true
+      - run: make checksums
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(cat VERSION)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* --title "$TAG" --notes "Automated build from $(git rev-parse --short HEAD)"
+          fi

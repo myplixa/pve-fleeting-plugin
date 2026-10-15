@@ -1,0 +1,24 @@
+[
+    {
+        "name": "Sample test",
+        "plugin_settings": {
+            "url": "",
+            "credentials_file_path": "/.../credentials.json",
+            "pool": "",
+            "storage": "",
+            "template_id": -1,
+            "max_instances": 5,
+            "instance_network_bridge": "",
+            "instance_network_vlan_tag": 0,
+            "instance_network_dhcp": false
+        },
+        "connector_config": {
+            "os": "linux",
+            "arch": "amd64",
+            "protocol": "ssh",
+            "username": "",
+            "password": "",
+            "use_static_credentials": true
+        }
+    }
+]
