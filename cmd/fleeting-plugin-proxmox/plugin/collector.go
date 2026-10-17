@@ -35,8 +35,14 @@ func (ig *InstanceGroup) runRemovedInstanceCollector() {
 		case <-ig.instanceCollectionTrigger:
 			ig.drainInstanceCollectionTriggerChannel()
 
-			// Sleep for a bit to give Proxmox a chance to propagate renames that happened before trigger
-			<-time.After(collectionWaitAfterTrigger)
+			// Sleep for a bit to give Proxmox a chance to propagate renames
+			// that happened before trigger, but still return promptly if
+			// shutdown is requested while we're waiting.
+			select {
+			case <-ig.collectorShutdownTrigger:
+				return
+			case <-time.After(collectionWaitAfterTrigger):
+			}
 
 			ig.collectRemovedInstances()
 		}
@@ -44,7 +50,7 @@ func (ig *InstanceGroup) runRemovedInstanceCollector() {
 }
 
 func (ig *InstanceGroup) collectRemovedInstances() {
-	ctx, cancel := context.WithTimeout(context.Background(), collectionTimeout)
+	ctx, cancel := context.WithTimeout(ig.collectorCtx, collectionTimeout)
 	defer cancel()
 
 	ig.instanceCloningMu.Lock()
@@ -67,7 +73,7 @@ func (ig *InstanceGroup) collectRemovedInstances() {
 			continue
 		}
 
-		if member.Name != ig.Settings.InstanceNameRemoving {
+		if !hasInstanceNamePrefix(member.Name, ig.Settings.InstanceNameRemoving) {
 			continue
 		}
 
@@ -91,22 +97,14 @@ func (ig *InstanceGroup) collectInstance(ctx context.Context, member proxmox.Clu
 
 	if vm.Status == "running" {
 		task, err := vm.Stop(ctx)
-		if err == nil {
-			err = task.Wait(ctx, proxmoxTaskWaitInterval, collectionTimeout)
-		}
-
-		if err != nil {
+		if err := waitForTask(ctx, task, err, collectionTimeout); err != nil {
 			ig.log.Error("collector failed to stop instance", "vmid", member.VMID, "err", err)
 			return
 		}
 	}
 
 	task, err := vm.Delete(ctx, nil)
-	if err == nil {
-		err = task.Wait(ctx, proxmoxTaskWaitInterval, collectionTimeout)
-	}
-
-	if err != nil {
+	if err := waitForTask(ctx, task, err, collectionTimeout); err != nil {
 		ig.log.Error("collector failed to delete instance", "vmid", member.VMID, "err", err)
 	}
 }

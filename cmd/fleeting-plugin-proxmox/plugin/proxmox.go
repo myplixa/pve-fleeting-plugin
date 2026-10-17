@@ -69,13 +69,14 @@ func (ig *InstanceGroup) getProxmoxClient() (*proxmox.Client, error) {
 		return nil, err
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		//nolint:gosec
+		InsecureSkipVerify: ig.Settings.InsecureSkipTLSVerify,
+	}
+
 	httpClient := http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				//nolint:gosec
-				InsecureSkipVerify: ig.Settings.InsecureSkipTLSVerify,
-			},
-		},
+		Transport: transport,
 	}
 
 	return proxmox.NewClient(
@@ -99,6 +100,12 @@ func (ig *InstanceGroup) getProxmoxAPIToken() (*apiToken, error) {
 		return nil, fmt.Errorf("failed to open credentials file from path='%s': %w", ig.Settings.CredentialsFilePath, err)
 	}
 	defer credentialsFile.Close()
+
+	if info, statErr := credentialsFile.Stat(); statErr == nil {
+		if info.Mode().Perm()&0o077 != 0 {
+			ig.log.Warn("credentials file is readable by group/other, consider chmod 600", "path", ig.Settings.CredentialsFilePath)
+		}
+	}
 
 	token := apiToken{}
 	if err := json.NewDecoder(credentialsFile).Decode(&token); err != nil {

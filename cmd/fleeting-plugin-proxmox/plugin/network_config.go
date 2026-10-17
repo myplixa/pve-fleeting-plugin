@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -20,7 +19,13 @@ const (
 // device, before it is started. A no-op if none of them are configured,
 // leaving the template's network config untouched.
 func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxmox.VirtualMachine) error {
+	requestedOverride := ig.Settings.InstanceNetworkBridge != "" || ig.Settings.InstanceNetworkVlanTag != nil || ig.Settings.InstanceNetworkDHCP
+
 	if vm.VirtualMachineConfig == nil {
+		if requestedOverride {
+			ig.log.Warn("network/cloud-init configuration was requested but instance has no VM config to apply it to", "vmid", vm.VMID)
+		}
+
 		return nil
 	}
 
@@ -28,7 +33,12 @@ func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxm
 
 	current := vm.VirtualMachineConfig.Nets[net0Device]
 
-	if newNet0, changed := buildNetworkOverride(current, ig.Settings.InstanceNetworkBridge, ig.Settings.InstanceNetworkVlanTag); changed {
+	newNet0, changed := buildNetworkOverride(current, ig.Settings.InstanceNetworkBridge, ig.Settings.InstanceNetworkVlanTag)
+	if !changed && (ig.Settings.InstanceNetworkBridge != "" || ig.Settings.InstanceNetworkVlanTag != nil) && current == "" {
+		ig.log.Warn("network override was requested but template has no net0 device to apply it to", "vmid", vm.VMID)
+	}
+
+	if changed {
 		options = append(options, proxmox.VirtualMachineOption{Name: net0Device, Value: newNet0})
 	}
 
@@ -36,20 +46,7 @@ func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxm
 		options = append(options, proxmox.VirtualMachineOption{Name: ipconfig0Device, Value: dhcpIPConfig})
 	}
 
-	if len(options) == 0 {
-		return nil
-	}
-
-	task, err := vm.Config(ctx, options...)
-	if err == nil {
-		err = task.Wait(ctx, proxmoxTaskWaitInterval, proxmoxTaskWaitTimeout)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to configure instance network: %w", err)
-	}
-
-	return nil
+	return ig.applyVMConfig(ctx, vm, "network", options...)
 }
 
 // buildNetworkOverride merges instance_network_bridge / instance_network_vlan_tag

@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"path"
 	"slices"
 	"strconv"
 	"sync"
@@ -17,6 +18,13 @@ import (
 var _ provider.InstanceGroup = (*InstanceGroup)(nil)
 
 const triggerChannelCapacity = 100
+
+// MaxInstances is the hard ceiling this plugin reports to GitLab Runner via
+// ProviderInfo.MaxSize. The actual operational cap is [runners.autoscaler]'s
+// own max_instances, which must stay at or below this value - see VM Naming
+// in the README. Not user-configurable, same as the vSphere/ESXi plugin's
+// own constant.
+const MaxInstances = 50
 
 type InstanceGroup struct {
 	Settings         `json:",inline"`
@@ -38,6 +46,18 @@ type InstanceGroup struct {
 
 	// Wait group for the collector.
 	collectorWaitGroup sync.WaitGroup `json:"-"`
+
+	// Lifetime context for the collector, canceled by collectorCancel in
+	// Shutdown. collectRemovedInstances derives its per-cycle timeout
+	// context from this one, so canceling it on shutdown also cancels any
+	// in-flight per-cycle work (an in-progress VM stop/delete task wait)
+	// instead of letting Shutdown block for up to collectionTimeout.
+	collectorCtx    context.Context    `json:"-"`
+	collectorCancel context.CancelFunc `json:"-"`
+
+	// SSH public key injected into deployed instances via cloud-init
+	// (ciuser/sshkeys), generated in Init when not using static credentials.
+	sshPubKey []byte `json:"-"`
 }
 
 // Init implements provider.InstanceGroup.
@@ -48,6 +68,7 @@ func (ig *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings
 	ig.FleetingSettings = settings
 	ig.instanceCollectionTrigger = make(chan struct{}, triggerChannelCapacity)
 	ig.collectorShutdownTrigger = make(chan struct{}, 1)
+	ig.collectorCtx, ig.collectorCancel = context.WithCancel(context.Background())
 
 	if err := ig.Settings.CheckRequiredFields(); err != nil {
 		return provider.ProviderInfo{}, err
@@ -64,7 +85,49 @@ func (ig *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings
 		return provider.ProviderInfo{}, err
 	}
 
-	if err := ig.markStaleInstancesForRemoval(ctx); err != nil {
+	// Tracks whether this process generated a fresh SSH key (as opposed to
+	// the operator supplying a fixed one via connector_config.key). A
+	// self-generated key is different on every restart, so any instance
+	// already in -running state from before this restart has an
+	// authorized_keys entry for the *old* key and will reject the new one -
+	// see markStaleInstancesForRemoval below.
+	//
+	// TODO(2.1 Option B): persist the generated key to disk (e.g. next to
+	// credentials_file_path) and load it back here instead of generating a
+	// fresh one every restart, so running instances survive a plugin
+	// restart without being torn down. Needs careful handling of file
+	// permissions (match the credentials-file 0600 convention) and a
+	// decision about key rotation.
+	selfGeneratedKey := false
+
+	if !ig.FleetingSettings.UseStaticCredentials {
+		if ig.FleetingSettings.Protocol == "" {
+			ig.FleetingSettings.Protocol = provider.ProtocolSSH
+		}
+
+		if ig.FleetingSettings.Username == "" {
+			ig.FleetingSettings.Username = "fleeting"
+		}
+
+		if ig.FleetingSettings.Key == nil {
+			key, err := generateSshKey()
+			if err != nil {
+				return provider.ProviderInfo{}, fmt.Errorf("generating ssh key: %w", err)
+			}
+
+			ig.FleetingSettings.Key = key
+			selfGeneratedKey = true
+		}
+
+		pubKey, err := getSshPubKey(ig.FleetingSettings.Key)
+		if err != nil {
+			return provider.ProviderInfo{}, fmt.Errorf("deriving ssh public key: %w", err)
+		}
+
+		ig.sshPubKey = pubKey
+	}
+
+	if err := ig.markStaleInstancesForRemoval(ctx, selfGeneratedKey); err != nil {
 		return provider.ProviderInfo{}, err
 	}
 
@@ -76,8 +139,8 @@ func (ig *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings
 	ig.startRemovedInstanceCollector()
 
 	return provider.ProviderInfo{
-		ID:      ig.Settings.Pool,
-		MaxSize: *ig.Settings.MaxInstances,
+		ID:      path.Join("proxmox", ig.Settings.Name, ig.Settings.Pool),
+		MaxSize: MaxInstances,
 	}, nil
 }
 
@@ -89,6 +152,7 @@ func (ig *InstanceGroup) Heartbeat(_ context.Context, _ string) error {
 // Shutdown implements provider.InstanceGroup.
 func (ig *InstanceGroup) Shutdown(_ context.Context) error {
 	ig.collectorShutdownTrigger <- struct{}{}
+	ig.collectorCancel()
 
 	ig.collectorWaitGroup.Wait()
 
@@ -112,14 +176,12 @@ func (ig *InstanceGroup) Increase(ctx context.Context, count int) (int, error) {
 		cloneMu = new(sync.Mutex)
 	)
 
-	ig.instanceCloningMu.Lock()
-	defer ig.instanceCloningMu.Unlock()
-
 	for n := 0; n < count; n++ {
 		errorGroup.Go(func() error {
 			vmid, err := ig.deployInstance(ctx, template, cloneMu)
 			if err != nil {
 				ig.log.Error("failed to deploy an instance", "vmid", vmid, "err", err)
+				return err
 			}
 
 			ig.log.Info("successfully deployed instance", "vmid", vmid)
@@ -127,7 +189,7 @@ func (ig *InstanceGroup) Increase(ctx context.Context, count int) (int, error) {
 			succeeded++
 			succeededMu.Unlock()
 
-			return err
+			return nil
 		})
 	}
 
@@ -143,26 +205,14 @@ func (ig *InstanceGroup) Update(ctx context.Context, update func(instance string
 	ig.instanceCloningMu.Lock()
 	defer ig.instanceCloningMu.Unlock()
 
-	pool, err := ig.getProxmoxPool(ctx)
+	instances, err := ig.listInstances(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, member := range pool.Members {
-		if !ig.isProxmoxResourceAnInstance(member) {
-			continue
-		}
-
-		var state provider.State
-
-		switch member.Name {
-		case ig.Settings.InstanceNameCreating:
-			state = provider.StateCreating
-		case ig.Settings.InstanceNameRunning:
-			state = provider.StateRunning
-		case ig.Settings.InstanceNameRemoving:
-			state = provider.StateDeleting
-		default:
+	for _, member := range instances {
+		state, ok := ig.instanceState(member.Name)
+		if !ok {
 			continue // Unknown name, skipping...
 		}
 
@@ -189,17 +239,38 @@ func (ig *InstanceGroup) ConnectInfo(ctx context.Context, instance string) (prov
 		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance vmid='%d' network address: %w", VMID, err)
 	}
 
-	return provider.ConnectInfo{
+	info := provider.ConnectInfo{
 		ID:              instance,
 		InternalAddr:    internalAddress,
 		ExternalAddr:    externalAddress,
 		ConnectorConfig: ig.FleetingSettings.ConnectorConfig,
-	}, nil
+	}
+
+	if info.UseStaticCredentials {
+		return info, nil
+	}
+
+	if info.Protocol == "" {
+		info.Protocol = provider.ProtocolSSH
+	}
+
+	if info.Username == "" {
+		info.Username = ig.FleetingSettings.Username
+	}
+
+	if info.Protocol == provider.ProtocolSSH && info.Key == nil {
+		info.Key = ig.FleetingSettings.Key
+	}
+
+	return info, nil
 }
 
 // Decrease implements provider.InstanceGroup.
 func (ig *InstanceGroup) Decrease(ctx context.Context, instancesToRemove []string) ([]string, error) {
-	pool, err := ig.getProxmoxPool(ctx)
+	ig.instanceCloningMu.Lock()
+	defer ig.instanceCloningMu.Unlock()
+
+	instances, err := ig.listInstances(ctx)
 	if err != nil {
 		return []string{}, err
 	}
@@ -211,23 +282,17 @@ func (ig *InstanceGroup) Decrease(ctx context.Context, instancesToRemove []strin
 		succeededMu = new(sync.Mutex)
 	)
 
-	for _, member := range pool.Members {
-		member := member
-
-		if !ig.isProxmoxResourceAnInstance(member) {
-			continue
-		}
-
+	for _, member := range instances {
 		if !slices.Contains(instancesToRemove, strconv.FormatUint(member.VMID, 10)) {
 			continue
 		}
 
-		if member.Name == ig.Settings.InstanceNameCreating {
+		if hasInstanceNamePrefix(member.Name, ig.Settings.InstanceNameCreating) {
 			// It must be running to start the deletion
 			continue
 		}
 
-		if member.Name == ig.Settings.InstanceNameRemoving {
+		if hasInstanceNamePrefix(member.Name, ig.Settings.InstanceNameRemoving) {
 			// Already deleting...
 			succeededMu.Lock()
 			succeeded = append(succeeded, strconv.FormatUint(member.VMID, 10))

@@ -8,6 +8,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeCredentials writes body to path with the 0600 permissions a
+// credentials file is expected to have, failing the test immediately on
+// any write error.
+func writeCredentials(t *testing.T, path, body string) {
+	t.Helper()
+
+	err := os.WriteFile(path, []byte(body), 0o600)
+	require.NoError(t, err)
+}
+
 func TestInstanceGroup_getProxmoxClient(t *testing.T) {
 	tempDir := t.TempDir()
 	ig := InstanceGroup{
@@ -18,14 +28,9 @@ func TestInstanceGroup_getProxmoxClient(t *testing.T) {
 		},
 	}
 
-	err := os.WriteFile(
-		ig.Settings.CredentialsFilePath,
-		[]byte(`{"token_id": "fleeting@pve!fleeting","token_secret": "03Ewl6rENi-rx-N503o"}`),
-		0o600,
-	)
-	require.NoError(t, err)
+	writeCredentials(t, ig.Settings.CredentialsFilePath, `{"token_id": "fleeting@pve!fleeting","token_secret": "03Ewl6rENi-rx-N503o"}`)
 
-	_, err = ig.getProxmoxClient()
+	_, err := ig.getProxmoxClient()
 	require.NoError(t, err)
 }
 
@@ -42,34 +47,19 @@ func TestInstanceGroup_getProxmoxAPIToken(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 
 	// Malformed credentials file
-	err = os.WriteFile(
-		ig.Settings.CredentialsFilePath,
-		[]byte(`{"token_id": 'fleeting@pve!fleeting',`),
-		0o600,
-	)
-	require.NoError(t, err)
+	writeCredentials(t, ig.Settings.CredentialsFilePath, `{"token_id": 'fleeting@pve!fleeting',`)
 
 	_, err = ig.getProxmoxAPIToken()
 	require.Error(t, err)
 
 	// Missing token_secret
-	err = os.WriteFile(
-		ig.Settings.CredentialsFilePath,
-		[]byte(`{"token_id": "fleeting@pve!fleeting"}`),
-		0o600,
-	)
-	require.NoError(t, err)
+	writeCredentials(t, ig.Settings.CredentialsFilePath, `{"token_id": "fleeting@pve!fleeting"}`)
 
 	_, err = ig.getProxmoxAPIToken()
 	require.ErrorIs(t, err, ErrSettingInvalidParameter)
 
 	// Correct credentials file
-	err = os.WriteFile(
-		ig.Settings.CredentialsFilePath,
-		[]byte(`{"token_id": "oQcW8N246FODI6Qui@pve!fleeting","token_secret": "88u3-kKLJ-gU7AfhWq"}`),
-		0o600,
-	)
-	require.NoError(t, err)
+	writeCredentials(t, ig.Settings.CredentialsFilePath, `{"token_id": "oQcW8N246FODI6Qui@pve!fleeting","token_secret": "88u3-kKLJ-gU7AfhWq"}`)
 
 	token, err := ig.getProxmoxAPIToken()
 	require.NoError(t, err)

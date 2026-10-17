@@ -3,3 +3,5 @@
 /vendor
 /config.json
 /credentials.json
+*token*.json
+/cmd/liveprobe/

@@ -7,6 +7,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// dualStackIfaces returns a single "ens18" interface with two IPv4
+// addresses (one global, one private) and two IPv6 addresses (one global,
+// one ULA) - the fixture shared by the "Any"/"Forced IPv4"/"Forced IPv6"
+// test cases below.
+func dualStackIfaces() []*proxmox.AgentNetworkIface {
+	return []*proxmox.AgentNetworkIface{
+		{
+			Name: "ens18",
+			IPAddresses: []*proxmox.AgentNetworkIPAddress{
+				{
+					IPAddressType: "ipv4",
+					IPAddress:     "8.8.8.8",
+				},
+				{
+					IPAddressType: "ipv4",
+					IPAddress:     "192.168.0.1",
+				},
+				{
+					IPAddressType: "ipv6",
+					IPAddress:     "2001:4860:4860::8888",
+				},
+				{
+					IPAddressType: "ipv6",
+					IPAddress:     "fd3b:47fc:de09::1",
+				},
+			},
+		},
+	}
+}
+
+// internalOnlyIfaces returns a single "ens18" interface with only a
+// private IPv4 address and a ULA IPv6 address (no globally routable
+// address of either family) - the fixture shared by the "...with only
+// internal address" test cases below.
+func internalOnlyIfaces() []*proxmox.AgentNetworkIface {
+	return []*proxmox.AgentNetworkIface{
+		{
+			Name: "ens18",
+			IPAddresses: []*proxmox.AgentNetworkIPAddress{
+				{
+					IPAddressType: "ipv4",
+					IPAddress:     "192.168.0.1",
+				},
+				{
+					IPAddressType: "ipv6",
+					IPAddress:     "fd3b:47fc:de09::1",
+				},
+			},
+		},
+	}
+}
+
 func Test_determineAddresses(t *testing.T) {
 	tests := []struct {
 		name string
@@ -35,29 +87,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolAny,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "8.8.8.8",
-						},
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "2001:4860:4860::8888",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  dualStackIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "fd3b:47fc:de09::1",
@@ -68,29 +98,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolIPv4,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "8.8.8.8",
-						},
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "2001:4860:4860::8888",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  dualStackIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "192.168.0.1",
@@ -101,29 +109,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolIPv6,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "8.8.8.8",
-						},
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "2001:4860:4860::8888",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  dualStackIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "fd3b:47fc:de09::1",
@@ -134,21 +120,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolAny,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  internalOnlyIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "fd3b:47fc:de09::1",
@@ -159,21 +131,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolIPv4,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  internalOnlyIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "192.168.0.1",
@@ -184,21 +142,7 @@ func Test_determineAddresses(t *testing.T) {
 
 			requestedInterface: "ens18",
 			requestedProtocol:  NetworkProtocolIPv6,
-			networkInterfaces: []*proxmox.AgentNetworkIface{
-				{
-					Name: "ens18",
-					IPAddresses: []*proxmox.AgentNetworkIPAddress{
-						{
-							IPAddressType: "ipv4",
-							IPAddress:     "192.168.0.1",
-						},
-						{
-							IPAddressType: "ipv6",
-							IPAddress:     "fd3b:47fc:de09::1",
-						},
-					},
-				},
-			},
+			networkInterfaces:  internalOnlyIfaces(),
 
 			expectedError:           nil,
 			expectedInternalAddress: "fd3b:47fc:de09::1",

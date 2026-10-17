@@ -1,16 +1,20 @@
 [
     {
         "name": "Sample test",
+        "max_instances": 5,
         "plugin_settings": {
+            "name": "sample-test",
             "url": "",
             "credentials_file_path": "/.../credentials.json",
             "pool": "",
             "storage": "",
             "template_id": -1,
-            "max_instances": 5,
             "instance_network_bridge": "",
             "instance_network_vlan_tag": 0,
-            "instance_network_dhcp": false
+            "instance_network_dhcp": false,
+            "instance_num_cpus": 0,
+            "instance_memory_mb": 0,
+            "instance_disks": []
         },
         "connector_config": {
             "os": "linux",
