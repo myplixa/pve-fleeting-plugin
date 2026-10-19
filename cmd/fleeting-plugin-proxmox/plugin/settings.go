@@ -12,8 +12,8 @@ var diskKeyPattern = regexp.MustCompile(`^(ide|sata|scsi|virtio)\d+$`)
 
 // InstanceDisk configures one disk slot on the deployed instance. If Disk
 // already exists on the clone (inherited from the template), it is resized
-// to SizeGB; otherwise a new disk of that size is allocated on
-// Settings.Storage.
+// to SizeGB; otherwise a new disk of that size is allocated on Storage (or
+// Settings.Storage, if Storage is left empty).
 type InstanceDisk struct {
 	// Proxmox disk key, e.g. "virtio0", "scsi1", "sata0".
 	Disk string `json:"disk"`
@@ -21,6 +21,39 @@ type InstanceDisk struct {
 	// Target size in GB. Resizing an existing disk smaller than its current
 	// size is rejected by the Proxmox API at deploy time.
 	SizeGB int `json:"size_gb"`
+
+	// Proxmox VE storage to allocate this disk on, if it doesn't already
+	// exist on the template. Falls back to Settings.Storage when empty, so
+	// this only needs to be set when a disk should land on a different
+	// storage pool than the rest of the instance.
+	Storage string `json:"storage,omitempty"`
+}
+
+// InstanceNetwork groups the instance_network_* settings that configure the
+// deployed instance's net0 device and cloud-init networking, and where to
+// read its resulting IP address back from.
+type InstanceNetwork struct {
+	// Network interface to read instance's IP address from.
+	Interface string `json:"interface,omitempty"`
+
+	// Network protocol to look for when discovering instance's IP address.
+	Protocol NetworkProtocol `json:"protocol,omitempty"`
+
+	// Bridge to attach the deployed instance's net0 device to. If empty, the
+	// clone keeps whatever bridge is configured on the template.
+	Bridge string `json:"bridge,omitempty"`
+
+	// VLAN tag to set on the deployed instance's net0 device. nil leaves the
+	// tag untouched; 0 removes any tag (plain, untagged bridge access).
+	VlanTag *int `json:"vlan_tag,omitempty"`
+
+	// If true, configure cloud-init (ipconfig0=ip=dhcp,ip6=dhcp) on the
+	// deployed instance so it actually requests a DHCP lease on boot. Needed
+	// for cloud-init templates that don't already bring up networking on
+	// their own (e.g. a bare template with no netplan/network-config baked
+	// in). No effect on templates that already configure networking
+	// themselves.
+	DHCP bool `json:"dhcp,omitempty"`
 }
 
 var (
@@ -79,11 +112,9 @@ type Settings struct {
 	// ID of the Proxmox VE VM to create instances from.
 	TemplateID *int `json:"template_id,omitempty"`
 
-	// Network interface to read instance's IP address from.
-	InstanceNetworkInterface string `json:"instance_network_interface"`
-
-	// Network protocol to look for when discovering instance's IP address.
-	InstanceNetworkProtocol NetworkProtocol `json:"instance_network_protocol"`
+	// Network settings for the deployed instance (interface/protocol to
+	// read its IP address from, bridge, VLAN tag, DHCP). See InstanceNetwork.
+	InstanceNetwork InstanceNetwork `json:"instance_network,omitempty"`
 
 	// Base name for instances during creation. Each instance gets a unique
 	// "<base>-<shortUUID>" name. Defaults to "<Name>-creating".
@@ -95,29 +126,13 @@ type Settings struct {
 	// Base name for instances during removal. Defaults to "<Name>-removing".
 	InstanceNameRemoving string `json:"instance_name_removing,omitempty"`
 
-	// Bridge to attach the deployed instance's net0 device to. If empty, the
-	// clone keeps whatever bridge is configured on the template.
-	InstanceNetworkBridge string `json:"instance_network_bridge,omitempty"`
-
-	// VLAN tag to set on the deployed instance's net0 device. nil leaves the
-	// tag untouched; 0 removes any tag (plain, untagged bridge access).
-	InstanceNetworkVlanTag *int `json:"instance_network_vlan_tag,omitempty"`
-
-	// If true, configure cloud-init (ipconfig0=ip=dhcp,ip6=dhcp) on the
-	// deployed instance so it actually requests a DHCP lease on boot. Needed
-	// for cloud-init templates that don't already bring up networking on
-	// their own (e.g. a bare template with no netplan/network-config baked
-	// in). No effect on templates that already configure networking
-	// themselves.
-	InstanceNetworkDHCP bool `json:"instance_network_dhcp,omitempty"`
-
 	// Overrides the cloned VM's vCPU core count (template's socket count is
 	// left untouched). If unset (or 0), inherits the template's value.
 	InstanceNumCPUs *int `json:"instance_num_cpus,omitempty"`
 
-	// Overrides the cloned VM's memory size, in MB. If unset (or 0),
+	// Overrides the cloned VM's memory size, in GB. If unset (or 0),
 	// inherits the template's value.
-	InstanceMemoryMB *int `json:"instance_memory_mb,omitempty"`
+	InstanceMemoryGB *int `json:"instance_memory_gb,omitempty"`
 
 	// Per-disk overrides for the deployed instance - resizes a disk
 	// inherited from the template, or allocates a new one if the disk key
@@ -126,12 +141,12 @@ type Settings struct {
 }
 
 func (s *Settings) FillWithDefaults() {
-	if s.InstanceNetworkInterface == "" {
-		s.InstanceNetworkInterface = DefaultInstanceNetworkInterface
+	if s.InstanceNetwork.Interface == "" {
+		s.InstanceNetwork.Interface = DefaultInstanceNetworkInterface
 	}
 
-	if s.InstanceNetworkProtocol == "" {
-		s.InstanceNetworkProtocol = DefaultInstanceNetworkProtocol
+	if s.InstanceNetwork.Protocol == "" {
+		s.InstanceNetwork.Protocol = DefaultInstanceNetworkProtocol
 	}
 
 	namePrefix := s.Name
@@ -173,35 +188,27 @@ func (s *Settings) CheckRequiredFields() error {
 		return fmt.Errorf("%w: template_id", ErrRequiredSettingMissing)
 	}
 
-	if s.InstanceNetworkProtocol != "" && s.InstanceNetworkProtocol != NetworkProtocolIPv4 && s.InstanceNetworkProtocol != NetworkProtocolIPv6 && s.InstanceNetworkProtocol != NetworkProtocolAny {
-		return fmt.Errorf("%w: instance_network_protocol: must be ipv4, ipv6 or any", ErrSettingInvalidParameter)
+	if s.InstanceNetwork.Protocol != "" && s.InstanceNetwork.Protocol != NetworkProtocolIPv4 && s.InstanceNetwork.Protocol != NetworkProtocolIPv6 && s.InstanceNetwork.Protocol != NetworkProtocolAny {
+		return fmt.Errorf("%w: instance_network.protocol: must be ipv4, ipv6 or any", ErrSettingInvalidParameter)
 	}
 
-	if s.InstanceNetworkVlanTag != nil && (*s.InstanceNetworkVlanTag < 0 || *s.InstanceNetworkVlanTag > 4094) {
-		return fmt.Errorf("%w: instance_network_vlan_tag: must be between 0 and 4094", ErrSettingInvalidParameter)
+	if s.InstanceNetwork.VlanTag != nil && (*s.InstanceNetwork.VlanTag < 0 || *s.InstanceNetwork.VlanTag > 4094) {
+		return fmt.Errorf("%w: instance_network.vlan_tag: must be between 0 and 4094", ErrSettingInvalidParameter)
 	}
 
 	if s.InstanceNumCPUs != nil && *s.InstanceNumCPUs < 0 {
 		return fmt.Errorf("%w: instance_num_cpus: must be >= 0", ErrSettingInvalidParameter)
 	}
 
-	if s.InstanceMemoryMB != nil && *s.InstanceMemoryMB < 0 {
-		return fmt.Errorf("%w: instance_memory_mb: must be >= 0", ErrSettingInvalidParameter)
+	if s.InstanceMemoryGB != nil && *s.InstanceMemoryGB < 0 {
+		return fmt.Errorf("%w: instance_memory_gb: must be >= 0", ErrSettingInvalidParameter)
 	}
 
-	// Any entry in instance_disks that allocates a *new* disk (i.e. doesn't
-	// match an existing disk key on the template) needs storage to build a
-	// valid "<storage>:<size_gb>" Proxmox value. Which entries are new vs.
-	// a resize of an existing disk isn't known until deploy time (it
-	// depends on the template), so conservatively require storage whenever
-	// instance_disks is non-empty at all - this rejects some configs where
-	// every entry happens to be a pure resize, but catches the real
-	// failure mode (an opaque Proxmox error mid-deploy) at config-load time
-	// instead.
-	if len(s.InstanceDisks) > 0 && s.Storage == "" {
-		return fmt.Errorf("%w: storage", ErrRequiredSettingMissing)
-	}
-
+	// Which instance_disks entries are a fresh allocation vs. a resize of an
+	// existing disk isn't known until deploy time (it depends on the
+	// template), so each entry conservatively needs *some* storage to fall
+	// back on - either its own or Settings.Storage - to build a valid
+	// "<storage>:<size_gb>" Proxmox value if it does turn out to be new.
 	for _, disk := range s.InstanceDisks {
 		if !diskKeyPattern.MatchString(disk.Disk) {
 			return fmt.Errorf("%w: instance_disks: disk: must match %s", ErrSettingInvalidParameter, diskKeyPattern.String())
@@ -209,6 +216,10 @@ func (s *Settings) CheckRequiredFields() error {
 
 		if disk.SizeGB <= 0 {
 			return fmt.Errorf("%w: instance_disks: size_gb: must be > 0", ErrSettingInvalidParameter)
+		}
+
+		if disk.Storage == "" && s.Storage == "" {
+			return fmt.Errorf("%w: instance_disks: storage (or top-level storage)", ErrRequiredSettingMissing)
 		}
 	}
 

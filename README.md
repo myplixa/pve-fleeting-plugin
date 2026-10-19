@@ -52,12 +52,13 @@ check_interval = 3
       pool = "gitlab-runners"
       storage = "local-zfs"
       template_id = 999
-      instance_network_bridge = "vmbr0"
-      instance_network_vlan_tag = 100
-      instance_network_dhcp = true
-      instance_network_interface = "eth0"
       instance_num_cpus = 2
-      instance_memory_mb = 2048
+      instance_memory_gb = 2
+      [runners.autoscaler.plugin_config.instance_network]
+        bridge = "vmbr0"
+        vlan_tag = 100
+        dhcp = true
+        interface = "eth0"
       [[runners.autoscaler.plugin_config.instance_disks]]
         disk = "virtio0"
         size_gb = 20
@@ -98,16 +99,16 @@ See [Parameter Reference](#parameter-reference) for the `[[runners]]`/`[runners.
 | `insecure_skip_tls_verify`    | bool                      | `false`                             | If `true` then TLS certificate verification is disabled.                                     |
 | `credentials_file_path`       | string                    | N/A (required)                      | Path to Proxmox VE API token credentials file.                                               |
 | `pool`                        | string                    | N/A (required)                      | Name of the Proxmox VE pool to use.                                                           |
-| `storage`                     | string                    | N/A (required if template is a VM)  | Name of the Proxmox VE storage to use. Also where `instance_disks` entries that allocate a brand-new disk are created. |
+| `storage`                     | string                    | N/A (required if template is a VM, and no `instance_disks` entry sets its own `storage`)  | Name of the Proxmox VE storage used for the clone itself, and the default storage for any `instance_disks` entry that doesn't set its own `storage`. |
 | `template_id`                 | int                       | N/A (required)                      | ID of the Proxmox VE VM to create instances from.                                             |
-| `instance_network_interface`  | string                    | `ens18`                             | Network interface to read instance's IPv4 address from. See [note](#interface-naming) below. |
-| `instance_network_protocol`   | `any` or `ipv4` or `ipv6` | `ipv4`                              | Network protocol to look for when discovering instance's IP address. `any` prioritizes IPv6. |
-| `instance_network_bridge`     | string                    | *(unset — keep template's bridge)*  | Bridge to attach the deployed instance's `net0` device to.                                   |
-| `instance_network_vlan_tag`   | int                       | *(unset — keep template's tag)*     | VLAN tag to set on `net0`. `0` explicitly removes a tag (plain, untagged bridge access).      |
-| `instance_network_dhcp`       | bool                      | `false`                             | If `true`, configure cloud-init (`ipconfig0=ip=dhcp,ip6=dhcp`) so the instance actually requests a DHCP lease on boot. See [note](#cloud-init-networking) below. |
+| `instance_network.interface`  | string                    | `ens18`                             | Network interface to read instance's IPv4 address from. See [note](#interface-naming) below. |
+| `instance_network.protocol`   | `any` or `ipv4` or `ipv6` | `ipv4`                              | Network protocol to look for when discovering instance's IP address. `any` prioritizes IPv6. |
+| `instance_network.bridge`     | string                    | *(unset — keep template's bridge)*  | Bridge to attach the deployed instance's `net0` device to.                                   |
+| `instance_network.vlan_tag`   | int                       | *(unset — keep template's tag)*     | VLAN tag to set on `net0`. `0` explicitly removes a tag (plain, untagged bridge access).      |
+| `instance_network.dhcp`       | bool                      | `false`                             | If `true`, configure cloud-init (`ipconfig0=ip=dhcp,ip6=dhcp`) so the instance actually requests a DHCP lease on boot. See [note](#cloud-init-networking) below. |
 | `instance_num_cpus`           | int                       | *(unset — inherit template's value)* | Overrides the cloned VM's vCPU core count (`cores`). The template's socket count is left untouched. |
-| `instance_memory_mb`          | int                       | *(unset — inherit template's value)* | Overrides the cloned VM's memory size, in MB.                                                |
-| `instance_disks`              | array of `{disk, size_gb}` | *(unset — inherit template's disks)* | Per-disk overrides. `disk` is a Proxmox disk key (`virtio0`, `scsi1`, `sata0`, ...). If that key already exists on the clone (inherited from the template), it's resized to `size_gb` — Proxmox does not support shrinking, so a smaller value is rejected by the API at deploy time. If the key doesn't exist yet, a brand-new disk of that size is allocated on `storage`. See [Resource Sizing](#resource-sizing). |
+| `instance_memory_gb`          | int                       | *(unset — inherit template's value)* | Overrides the cloned VM's memory size, in GB.                                                |
+| `instance_disks`              | array of `{disk, size_gb, storage}` | *(unset — inherit template's disks)* | Per-disk overrides. `disk` is a Proxmox disk key (`virtio0`, `scsi1`, `sata0`, ...). If that key already exists on the clone (inherited from the template), it's resized to `size_gb` — Proxmox does not support shrinking, so a smaller value is rejected by the API at deploy time. If the key doesn't exist yet, a brand-new disk of that size is allocated on this entry's own `storage` (falling back to the top-level `storage` if unset). See [Resource Sizing](#resource-sizing). |
 | `instance_name_creating`      | string                    | `<name>-creating`                   | Base name for instances during creation. Each instance gets a unique `<base>-<shortUUID>` name — see [VM Naming](#vm-naming). |
 | `instance_name_running`       | string                    | `<name>-running`                    | Base name for running instances.                                                              |
 | `instance_name_removing`      | string                    | `<name>-removing`                   | Base name for instances during removal.                                                       |
@@ -118,13 +119,13 @@ See [Parameter Reference](#parameter-reference) for the `[[runners]]`/`[runners.
 
 Every deployed instance gets a unique name: `<base>-<shortUUID>` (e.g. `ci-vm-small-running-a1b2c3d4`), where `<base>` is whichever of `instance_name_creating`/`_running`/`_removing` matches its current lifecycle state. The UUID suffix is generated once at clone time and preserved across every rename (`creating` → `running`, or → `removing`), so one instance keeps the same identifying suffix for its whole life — the same convention the vSphere/ESXi fleeting plugin uses, just applied on top of this plugin's rename-based state tracking (lifecycle state is read back from whichever base name prefix currently matches, not from an exact string).
 
-GitLab Runner itself never looks at this name — `Update`/`ConnectInfo` identify instances by their Proxmox **VMID**, which is already globally unique. The generated name exists purely so instances are distinguishable from each other (and from unrelated VMs) in the Proxmox UI.
+GitLab Runner identifies instances by this generated name — `Update`/`ConnectInfo`/`Decrease` all use it as the instance ID, which is also what shows up in job logs (e.g. `Dialing instance ci-vm-small-running-a1b2c3d4...`) instead of an opaque VMID. Because the name's lifecycle-state prefix changes on rename (`creating` → `running` → `removing`), the ID GitLab Runner tracks for a given VM does too — this is safe because those renames only ever happen outside of the window GitLab Runner has a job tied to that ID (before a job is assigned, and after `Decrease` has already been called for it).
 
 Because state matching is a prefix check against `instance_name_*`, and those default to `<name>-creating`/`<name>-running`/`<name>-removing`, **multiple `[[runners]]` sections with different `name` values can safely share one pool** — each instance group's collector only ever matches names carrying its own prefix, so it won't pick up (or tear down) another tier's VMs.
 
 ### Resource Sizing
 
-`instance_num_cpus`, `instance_memory_mb` and `instance_disks` let multiple `[[runners]]` sections share a single template while requesting different hardware per tag/tier, instead of maintaining one template per size:
+`instance_num_cpus`, `instance_memory_gb` and `instance_disks` let multiple `[[runners]]` sections share a single template while requesting different hardware per tag/tier, instead of maintaining one template per size:
 
 ```toml
 [[runners]]
@@ -134,7 +135,7 @@ Because state matching is a prefix check against `instance_name_*`, and those de
     name = "ci-vm-small"
     template_id = 999
     instance_num_cpus = 2
-    instance_memory_mb = 2048
+    instance_memory_gb = 2
     [[runners.autoscaler.plugin_config.instance_disks]]
       disk = "virtio0"
       size_gb = 10
@@ -146,13 +147,13 @@ Because state matching is a prefix check against `instance_name_*`, and those de
     name = "ci-vm-large"
     template_id = 999
     instance_num_cpus = 8
-    instance_memory_mb = 16384
+    instance_memory_gb = 16
     [[runners.autoscaler.plugin_config.instance_disks]]
       disk = "virtio0"
       size_gb = 50
 ```
 
-A second disk that doesn't exist on the template yet (e.g. `virtio1`) is allocated fresh rather than resized — useful for a separate data/cache disk per tier:
+A second disk that doesn't exist on the template yet (e.g. `virtio1`) is allocated fresh rather than resized — useful for a separate data/cache disk per tier. Each entry falls back to the top-level `storage` when it doesn't set its own, so a disk only needs `storage` spelled out when it should land on a *different* storage pool than the rest of the instance:
 
 ```toml
     [[runners.autoscaler.plugin_config.instance_disks]]
@@ -161,6 +162,7 @@ A second disk that doesn't exist on the template yet (e.g. `virtio1`) is allocat
     [[runners.autoscaler.plugin_config.instance_disks]]
       disk = "virtio1"
       size_gb = 100
+      storage = "fast-nvme"
 ```
 
 ### Credentials file
@@ -187,11 +189,11 @@ The template must be a bootable VM with QEMU guest agent installed and running (
 
 #### Cloud-init networking
 
-If the template doesn't already bring up networking on its own (e.g. a bare cloud-init template with no `netplan`/network-config baked in and no `ipconfig0` set), set `instance_network_dhcp: true` so the plugin configures `ipconfig0=ip=dhcp,ip6=dhcp` on the clone before starting it. Without this, a bare cloud-init image can boot with its NIC completely unconfigured — up, but with no IP at all.
+If the template doesn't already bring up networking on its own (e.g. a bare cloud-init template with no `netplan`/network-config baked in and no `ipconfig0` set), set `instance_network.dhcp = true` so the plugin configures `ipconfig0=ip=dhcp,ip6=dhcp` on the clone before starting it. Without this, a bare cloud-init image can boot with its NIC completely unconfigured — up, but with no IP at all.
 
 #### Interface naming
 
-Once cloud-init actually manages the interface (via `instance_network_dhcp` or a template that already does), Debian/Ubuntu cloud images commonly name it `eth0` rather than the kernel's predictable `ensNN` name — set `instance_network_interface` accordingly if `ConnectInfo` can't find an address.
+Once cloud-init actually manages the interface (via `instance_network.dhcp` or a template that already does), Debian/Ubuntu cloud images commonly name it `eth0` rather than the kernel's predictable `ensNN` name — set `instance_network.interface` accordingly if `ConnectInfo` can't find an address.
 
 ### Proxmox configuration
 

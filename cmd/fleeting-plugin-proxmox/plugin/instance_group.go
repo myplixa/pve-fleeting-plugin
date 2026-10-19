@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -216,7 +215,7 @@ func (ig *InstanceGroup) Update(ctx context.Context, update func(instance string
 			continue // Unknown name, skipping...
 		}
 
-		update(strconv.FormatUint(member.VMID, 10), state)
+		update(member.Name, state)
 	}
 
 	return nil
@@ -224,19 +223,14 @@ func (ig *InstanceGroup) Update(ctx context.Context, update func(instance string
 
 // ConnectInfo implements provider.InstanceGroup.
 func (ig *InstanceGroup) ConnectInfo(ctx context.Context, instance string) (provider.ConnectInfo, error) {
-	VMID, err := strconv.Atoi(instance)
+	vm, err := ig.getProxmoxVMByName(ctx, instance)
 	if err != nil {
-		return provider.ConnectInfo{}, fmt.Errorf("failed to parse instance name '%s': %w", instance, err)
-	}
-
-	vm, err := ig.getProxmoxVM(ctx, VMID)
-	if err != nil {
-		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance vmid='%d': %w", VMID, err)
+		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance name='%s': %w", instance, err)
 	}
 
 	internalAddress, externalAddress, err := ig.getInstanceAddresses(ctx, vm)
 	if err != nil {
-		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance vmid='%d' network address: %w", VMID, err)
+		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance name='%s' network address: %w", instance, err)
 	}
 
 	info := provider.ConnectInfo{
@@ -283,7 +277,7 @@ func (ig *InstanceGroup) Decrease(ctx context.Context, instancesToRemove []strin
 	)
 
 	for _, member := range instances {
-		if !slices.Contains(instancesToRemove, strconv.FormatUint(member.VMID, 10)) {
+		if !slices.Contains(instancesToRemove, member.Name) {
 			continue
 		}
 
@@ -295,13 +289,13 @@ func (ig *InstanceGroup) Decrease(ctx context.Context, instancesToRemove []strin
 		if hasInstanceNamePrefix(member.Name, ig.Settings.InstanceNameRemoving) {
 			// Already deleting...
 			succeededMu.Lock()
-			succeeded = append(succeeded, strconv.FormatUint(member.VMID, 10))
+			succeeded = append(succeeded, member.Name)
 			succeededMu.Unlock()
 
 			continue
 		}
 
-		ig.log.Info("removing instance", "vmid", member.VMID)
+		ig.log.Info("removing instance", "vmid", member.VMID, "name", member.Name)
 
 		errorGroup.Go(func() error {
 			if err := ig.markInstancesForRemoval(ctx, &member); err != nil {
@@ -310,7 +304,7 @@ func (ig *InstanceGroup) Decrease(ctx context.Context, instancesToRemove []strin
 
 			succeededMu.Lock()
 			defer succeededMu.Unlock()
-			succeeded = append(succeeded, strconv.FormatUint(member.VMID, 10))
+			succeeded = append(succeeded, member.Name)
 
 			return nil
 		})

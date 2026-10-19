@@ -71,6 +71,13 @@ func (ig *InstanceGroup) configureCloudInitUser(ctx context.Context, vm *proxmox
 	options := []proxmox.VirtualMachineOption{
 		{Name: "ciuser", Value: ig.FleetingSettings.Username},
 		{Name: "sshkeys", Value: proxmoxURLEncode(ig.sshPubKey)},
+		// Proxmox defaults ciupgrade to 1, injecting package_upgrade: true
+		// into the generated cloud-init user-data. That runs apt dist-upgrade
+		// on every single first boot, slowing down (and sometimes failing,
+		// e.g. on transient mirror/network issues) an otherwise short-lived
+		// CI runner instance for no benefit - the template is expected to
+		// already be reasonably up to date.
+		{Name: "ciupgrade", Value: 0},
 	}
 
 	return ig.applyVMConfig(ctx, vm, "cloud-init user", options...)

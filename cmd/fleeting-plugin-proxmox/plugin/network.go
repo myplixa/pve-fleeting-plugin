@@ -34,7 +34,7 @@ func (ig *InstanceGroup) getInstanceAddresses(ctx context.Context, vm *proxmox.V
 	for {
 		if networkInterfaces, err := vm.AgentGetNetworkIFaces(ctx); err != nil {
 			lastErr = err
-		} else if internalAddress, externalAddress, err := determineAddresses(networkInterfaces, ig.InstanceNetworkInterface, ig.InstanceNetworkProtocol); err != nil {
+		} else if internalAddress, externalAddress, err := determineAddresses(networkInterfaces, ig.InstanceNetwork.Interface, ig.InstanceNetwork.Protocol); err != nil {
 			lastErr = err
 		} else {
 			return internalAddress, externalAddress, nil

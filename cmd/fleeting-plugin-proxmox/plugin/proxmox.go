@@ -44,6 +44,25 @@ func (ig *InstanceGroup) getProxmoxVM(ctx context.Context, vmid int) (*proxmox.V
 	return nil, ErrNotFound
 }
 
+// getProxmoxVMByName resolves one of this instance group's own instances
+// (see isProxmoxResourceAnInstance) by its current pool-listing name - the
+// public identifier handed to GitLab Runner via Update/ConnectInfo/Decrease,
+// since it's what shows up in job logs instead of an opaque VMID.
+func (ig *InstanceGroup) getProxmoxVMByName(ctx context.Context, name string) (*proxmox.VirtualMachine, error) {
+	instances, err := ig.listInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, member := range instances {
+		if member.Name == name {
+			return ig.getProxmoxVMOnNode(ctx, int(member.VMID), member.Node)
+		}
+	}
+
+	return nil, ErrNotFound
+}
+
 func (ig *InstanceGroup) getProxmoxVMOnNode(ctx context.Context, vmid int, nodeName string) (*proxmox.VirtualMachine, error) {
 	node, err := ig.proxmox.Node(ctx, nodeName)
 	if err != nil {

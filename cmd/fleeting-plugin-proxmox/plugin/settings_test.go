@@ -29,8 +29,8 @@ func TestSettings_fillWithDefaults(t *testing.T) {
 	require.Equal(t, "fleeting-creating", settings.InstanceNameCreating)
 	require.Equal(t, "fleeting-running", settings.InstanceNameRunning)
 	require.Equal(t, "fleeting-removing", settings.InstanceNameRemoving)
-	require.Equal(t, "ens18", settings.InstanceNetworkInterface)
-	require.Equal(t, "ipv4", settings.InstanceNetworkProtocol)
+	require.Equal(t, "ens18", settings.InstanceNetwork.Interface)
+	require.Equal(t, "ipv4", settings.InstanceNetwork.Protocol)
 
 	settings2 := Settings{
 		Name: sampleName,
@@ -118,8 +118,24 @@ func TestSettings_checkRequiredFields(t *testing.T) {
 		},
 		{
 			name:          "Invalid protocol",
-			settings:      validSettings(func(s *Settings) { s.InstanceNetworkProtocol = "invalid-protocol" }),
+			settings:      validSettings(func(s *Settings) { s.InstanceNetwork.Protocol = "invalid-protocol" }),
 			expectedError: ErrSettingInvalidParameter,
+		},
+		{
+			name: "Instance disk without its own storage and no top-level storage",
+			settings: validSettings(func(s *Settings) {
+				s.Storage = ""
+				s.InstanceDisks = []InstanceDisk{{Disk: "virtio1", SizeGB: 10}}
+			}),
+			expectedError: ErrRequiredSettingMissing,
+		},
+		{
+			name: "Instance disk with its own storage, no top-level storage",
+			settings: validSettings(func(s *Settings) {
+				s.Storage = ""
+				s.InstanceDisks = []InstanceDisk{{Disk: "virtio1", SizeGB: 10, Storage: "other-storage"}}
+			}),
+			expectedError: nil,
 		},
 	}
 

@@ -14,12 +14,13 @@ const (
 	dhcpIPConfig    = "ip=dhcp,ip6=dhcp"
 )
 
-// configureInstanceNetwork applies instance_network_bridge / instance_network_vlan_tag
-// / instance_network_dhcp settings to a freshly cloned instance's net0
+// configureInstanceNetwork applies instance_network.bridge / instance_network.vlan_tag
+// / instance_network.dhcp settings to a freshly cloned instance's net0
 // device, before it is started. A no-op if none of them are configured,
 // leaving the template's network config untouched.
 func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxmox.VirtualMachine) error {
-	requestedOverride := ig.Settings.InstanceNetworkBridge != "" || ig.Settings.InstanceNetworkVlanTag != nil || ig.Settings.InstanceNetworkDHCP
+	network := ig.Settings.InstanceNetwork
+	requestedOverride := network.Bridge != "" || network.VlanTag != nil || network.DHCP
 
 	if vm.VirtualMachineConfig == nil {
 		if requestedOverride {
@@ -33,8 +34,8 @@ func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxm
 
 	current := vm.VirtualMachineConfig.Nets[net0Device]
 
-	newNet0, changed := buildNetworkOverride(current, ig.Settings.InstanceNetworkBridge, ig.Settings.InstanceNetworkVlanTag)
-	if !changed && (ig.Settings.InstanceNetworkBridge != "" || ig.Settings.InstanceNetworkVlanTag != nil) && current == "" {
+	newNet0, changed := buildNetworkOverride(current, network.Bridge, network.VlanTag)
+	if !changed && (network.Bridge != "" || network.VlanTag != nil) && current == "" {
 		ig.log.Warn("network override was requested but template has no net0 device to apply it to", "vmid", vm.VMID)
 	}
 
@@ -42,14 +43,14 @@ func (ig *InstanceGroup) configureInstanceNetwork(ctx context.Context, vm *proxm
 		options = append(options, proxmox.VirtualMachineOption{Name: net0Device, Value: newNet0})
 	}
 
-	if ig.Settings.InstanceNetworkDHCP {
+	if network.DHCP {
 		options = append(options, proxmox.VirtualMachineOption{Name: ipconfig0Device, Value: dhcpIPConfig})
 	}
 
 	return ig.applyVMConfig(ctx, vm, "network", options...)
 }
 
-// buildNetworkOverride merges instance_network_bridge / instance_network_vlan_tag
+// buildNetworkOverride merges instance_network.bridge / instance_network.vlan_tag
 // settings into an existing Proxmox net0-style config string (e.g.
 // "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"), preserving the model/MAC and any
 // other keys (firewall, rate, mtu, ...) the clone already has. Returns the
