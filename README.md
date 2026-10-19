@@ -187,6 +187,8 @@ This token can create/delete/reconfigure VMs across the whole Proxmox cluster, s
 
 The template must be a bootable VM with QEMU guest agent installed and running (see [Proxmox documentation](https://pve.proxmox.com/wiki/Qemu-guest-agent)).
 
+The plugin always sets Proxmox's `ciupgrade` option to `0` on deployed instances — Proxmox otherwise defaults it to `1`, which injects `package_upgrade: true` into the generated cloud-init user-data and runs a full `apt dist-upgrade` on every single first boot. For a short-lived CI runner instance that's pure overhead at best (slower startup) and a source of flaky deploys at worst (a transient mirror/network hiccup fails the whole boot). This isn't configurable — keep the template itself reasonably up to date instead of relying on first-boot upgrades.
+
 #### Cloud-init networking
 
 If the template doesn't already bring up networking on its own (e.g. a bare cloud-init template with no `netplan`/network-config baked in and no `ipconfig0` set), set `instance_network.dhcp = true` so the plugin configures `ipconfig0=ip=dhcp,ip6=dhcp` on the clone before starting it. Without this, a bare cloud-init image can boot with its NIC completely unconfigured — up, but with no IP at all.
