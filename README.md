@@ -189,6 +189,15 @@ The template must be a bootable VM with QEMU guest agent installed and running (
 
 The plugin always sets Proxmox's `ciupgrade` option to `0` on deployed instances — Proxmox otherwise defaults it to `1`, which injects `package_upgrade: true` into the generated cloud-init user-data and runs a full `apt dist-upgrade` on every single first boot. For a short-lived CI runner instance that's pure overhead at best (slower startup) and a source of flaky deploys at worst (a transient mirror/network hiccup fails the whole boot). This isn't configurable — keep the template itself reasonably up to date instead of relying on first-boot upgrades.
 
+#### Docker on the template
+
+The `docker-autoscaler` executor connects over SSH as the connector user (`ciuser`/`connector_config.username`, `fleeting` by default when using self-generated keys) and runs `docker` commands **directly against that host's own Docker daemon** — there is no `sudo`, and GitLab Runner never installs Docker for you. The template itself must have Docker Engine installed and running, and the connector user must be a member of the `docker` group (`/var/run/docker.sock` is `root:docker`, mode `660`) — otherwise every job fails with `Cannot connect to the Docker daemon` / a permission-denied error on the socket.
+
+On a cloud-init template, adding the user to a group is not as simple as editing `/etc/cloud/cloud.cfg`'s `system_info.default_user.groups` and calling it done:
+
+* Proxmox's `ciuser` doesn't create an independent new user — it renames/repurposes the distro image's cloud-init **default_user**, inheriting whatever groups list that image bakes in. On Debian's genericcloud image, that list actually lives in `/etc/cloud/cloud.cfg.d/01_debian_cloud.cfg`, which is merged *on top of* (and wins over) the one in the main `/etc/cloud/cloud.cfg` — add `docker` there, not in the top-level file, or the edit silently has no effect.
+* If the template VM was ever booted outside of a clone (e.g. for maintenance, to make this exact edit), cloud-init leaves "already ran" markers under `/var/lib/cloud/instance*` on its disk. Left in place, every clone made from that template inherits those markers and **skips the `users-groups` module entirely** on its real first boot — even though the config file on disk is correct. Run `cloud-init clean --logs` on the template (while it's briefly de-templated to apply the fix) before re-templating it, in addition to the usual `truncate -s 0 /etc/machine-id`.
+
 #### Cloud-init networking
 
 If the template doesn't already bring up networking on its own (e.g. a bare cloud-init template with no `netplan`/network-config baked in and no `ipconfig0` set), set `instance_network.dhcp = true` so the plugin configures `ipconfig0=ip=dhcp,ip6=dhcp` on the clone before starting it. Without this, a bare cloud-init image can boot with its NIC completely unconfigured — up, but with no IP at all.
