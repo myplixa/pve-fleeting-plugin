@@ -109,6 +109,7 @@ See [Parameter Reference](#parameter-reference) for the `[[runners]]`/`[runners.
 | `instance_num_cpus`           | int                       | *(unset — inherit template's value)* | Overrides the cloned VM's vCPU core count (`cores`). The template's socket count is left untouched. |
 | `instance_memory_gb`          | int                       | *(unset — inherit template's value)* | Overrides the cloned VM's memory size, in GB.                                                |
 | `instance_disks`              | array of `{disk, size_gb, storage}` | *(unset — inherit template's disks)* | Per-disk overrides. `disk` is a Proxmox disk key (`virtio0`, `scsi1`, `sata0`, ...). If that key already exists on the clone (inherited from the template), it's resized to `size_gb` — Proxmox does not support shrinking, so a smaller value is rejected by the API at deploy time. If the key doesn't exist yet, a brand-new disk of that size is allocated on this entry's own `storage` (falling back to the top-level `storage` if unset). See [Resource Sizing](#resource-sizing). |
+| `cloud_init_vendor_data`      | string                    | *(unset)*                           | Proxmox storage-volume reference to a cloud-init vendor-data snippet (e.g. `local:snippets/ci-extras.yaml`), applied via `cicustom=vendor=<value>`. See [Cloud-init vendor-data](#cloud-init-vendor-data) below. |
 | `instance_name_creating`      | string                    | `<name>-creating`                   | Base name for instances during creation. Each instance gets a unique `<base>-<shortUUID>` name — see [VM Naming](#vm-naming). |
 | `instance_name_running`       | string                    | `<name>-running`                    | Base name for running instances.                                                              |
 | `instance_name_removing`      | string                    | `<name>-removing`                   | Base name for instances during removal.                                                       |
@@ -205,6 +206,30 @@ If the template doesn't already bring up networking on its own (e.g. a bare clou
 #### Interface naming
 
 Once cloud-init actually manages the interface (via `instance_network.dhcp` or a template that already does), Debian/Ubuntu cloud images commonly name it `eth0` rather than the kernel's predictable `ensNN` name — set `instance_network.interface` accordingly if `ConnectInfo` can't find an address.
+
+#### Cloud-init vendor-data
+
+`ciuser`/`cipassword`/`sshkeys` cover basic account setup, but nothing more - no extra group membership, no files, no package installs, no disk mounts. Proxmox's cloud-init support for that goes through `cicustom`, which points at a snippet file instead of a simple value - and Proxmox's REST API has no endpoint to upload snippet content (only `iso`/`vztmpl`/`import` are accepted), so **the plugin can't generate or manage this file for you**. You write it once and stage it on the node's snippets storage yourself (scp/sftp/Ansible/manually), then point `cloud_init_vendor_data` at it as a storage-volume reference, e.g. `local:snippets/ci-extras.yaml` (storage needs `content` including `snippets`, e.g. `pvesm set local --content snippets` or editing `storage.cfg` directly).
+
+The file goes in as cloud-init **vendor-data**, which merges with (doesn't replace) the user-data Proxmox generates from `ciuser`/`cipassword`/`sshkeys` - that generated user-data has no `runcmd`/`write_files`/`packages`/`mounts` keys at all, so there's nothing to conflict with. This is the place for anything beyond basic account setup, e.g. adding the connector user to an extra group, dropping a monitoring agent's config file, or syncing time against an internal NTP server:
+
+```yaml
+#cloud-config
+packages:
+  - chrony
+
+write_files:
+  - path: /etc/chrony/conf.d/local-ntp.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      server 192.168.10.1 iburst prefer
+      makestep 1.0 3
+
+runcmd:
+  - systemctl disable --now systemd-timesyncd || true
+  - systemctl enable --now chrony
+```
 
 ### Proxmox configuration
 

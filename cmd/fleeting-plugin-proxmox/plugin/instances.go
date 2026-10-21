@@ -64,6 +64,10 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 			return err
 		}
 
+		if err := ig.configureCloudInitVendorData(ctx, vm); err != nil {
+			return err
+		}
+
 		// Start the VM
 		task, err := vm.Start(ctx)
 		if err := waitForTask(ctx, task, err, proxmoxTaskWaitTimeout); err != nil {

@@ -83,6 +83,23 @@ func (ig *InstanceGroup) configureCloudInitUser(ctx context.Context, vm *proxmox
 	return ig.applyVMConfig(ctx, vm, "cloud-init user", options...)
 }
 
+// configureCloudInitVendorData points the instance's cicustom vendor-data at
+// Settings.CloudInitVendorData, if set. A no-op otherwise. Applies
+// regardless of UseStaticCredentials - vendor-data provisioning (extra
+// groups, files, package installs, disk mounts) is orthogonal to how SSH
+// access is set up. The referenced snippet must already exist on Proxmox's
+// snippets storage - see the field doc on Settings.CloudInitVendorData.
+func (ig *InstanceGroup) configureCloudInitVendorData(ctx context.Context, vm *proxmox.VirtualMachine) error {
+	if ig.Settings.CloudInitVendorData == "" {
+		return nil
+	}
+
+	return ig.applyVMConfig(ctx, vm, "cloud-init vendor-data", proxmox.VirtualMachineOption{
+		Name:  "cicustom",
+		Value: "vendor=" + ig.Settings.CloudInitVendorData,
+	})
+}
+
 // proxmoxURLEncode percent-encodes an SSH public key for Proxmox's sshkeys
 // config field. url.QueryEscape is almost right (it already escapes "+" and
 // "/" from the base64 body to "%2B"/"%2F"), except it encodes a literal

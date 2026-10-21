@@ -112,6 +112,17 @@ type Settings struct {
 	// ID of the Proxmox VE VM to create instances from.
 	TemplateID *int `json:"template_id,omitempty"`
 
+	// Proxmox storage-volume reference for a cloud-init vendor-data snippet
+	// (e.g. "local:snippets/ci-extras.yaml"), applied to deployed instances
+	// via cicustom=vendor=<value>. The plugin never generates or uploads
+	// this file itself - Proxmox's REST API has no upload endpoint for
+	// snippets (only iso/vztmpl/import), so the file must be staged on the
+	// node's snippets storage out of band (scp/sftp/Ansible) before this is
+	// set. Vendor-data merges with (doesn't replace) the user-data Proxmox
+	// generates from ciuser/cipassword/sshkeys, so this is safe to use for
+	// extra runcmd/write_files/packages/mounts without touching those.
+	CloudInitVendorData string `json:"cloud_init_vendor_data,omitempty"`
+
 	// Network settings for the deployed instance (interface/protocol to
 	// read its IP address from, bridge, VLAN tag, DHCP). See InstanceNetwork.
 	InstanceNetwork InstanceNetwork `json:"instance_network,omitempty"`
