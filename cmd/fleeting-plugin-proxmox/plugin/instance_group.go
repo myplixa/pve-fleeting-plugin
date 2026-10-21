@@ -37,6 +37,18 @@ type InstanceGroup struct {
 	// a brief period it will be reported from Proxmox with old name (e.g. InstanceNameRemoving).
 	instanceCloningMu sync.Mutex `json:"-"`
 
+	// Serializes the Proxmox clone task end-to-end (API call through task
+	// completion), across every Increase call for this instance group - not
+	// just within one. Proxmox's pool-add step at the end of a clone takes a
+	// cluster-wide pmxcfs lock (cfs-lock 'file-user_cfg') that isn't scoped
+	// per pool; running clones concurrently reliably trips "got lock request
+	// timeout" under load, which also starves other pmxcfs-backed operations
+	// (the web UI/API, since pmxcfs backs all of /etc/pve). A per-Increase-call
+	// mutex isn't enough since GitLab Runner can call Increase multiple times
+	// concurrently as it scales up - this needs to live on the instance group
+	// itself to serialize across all of them.
+	cloneMu sync.Mutex `json:"-"`
+
 	// Trigger for collector to start removed instances collection.
 	instanceCollectionTrigger chan struct{} `json:"-"`
 
@@ -170,14 +182,11 @@ func (ig *InstanceGroup) Increase(ctx context.Context, count int) (int, error) {
 
 		succeeded   = 0
 		succeededMu = new(sync.Mutex)
-
-		// We need to mutex cloning as Proxmox will fail multiple requests in parallel
-		cloneMu = new(sync.Mutex)
 	)
 
 	for n := 0; n < count; n++ {
 		errorGroup.Go(func() error {
-			vmid, err := ig.deployInstance(ctx, template, cloneMu)
+			vmid, err := ig.deployInstance(ctx, template)
 			if err != nil {
 				ig.log.Error("failed to deploy an instance", "vmid", vmid, "err", err)
 				return err

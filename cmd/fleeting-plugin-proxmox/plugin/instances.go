@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/luthermonson/go-proxmox"
@@ -20,14 +19,14 @@ const (
 
 var ErrCloneVMWithoutConfiguredStorage = errors.New("attempted to clone a VM without configured storage")
 
-func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, error) {
+func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.VirtualMachine) (int, error) {
 	// Held only around the clone call itself (not the rest of the deploy):
 	// a freshly-cloned VM can briefly report its old (pool-listing-cached)
 	// name under a recycled VMID right after cloning, and this mutex keeps
 	// Update/Decrease/the collector from reading the pool listing while
 	// that's in flight. See the field doc on instanceCloningMu.
 	ig.instanceCloningMu.Lock()
-	VMID, task, err := ig.cloneTemplate(ctx, template, cloneMu)
+	VMID, err := ig.cloneTemplate(ctx, template)
 	ig.instanceCloningMu.Unlock()
 
 	if err != nil {
@@ -45,10 +44,6 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 	// the VM is orphaned with its -creating name forever (the collector
 	// only cleans up -removing instances).
 	err = func() error {
-		if err := waitForTask(ctx, task, nil, proxmoxTaskWaitTimeout); err != nil {
-			return fmt.Errorf("failed to wait for clone task: %w", err)
-		}
-
 		// The clone always lands on the template's own node, so look the
 		// VM up directly on that node instead of going through the pool
 		// listing, which can lag behind a just-finished clone.
@@ -123,21 +118,34 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 	return VMID, nil
 }
 
-func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, *proxmox.Task, error) {
+// cloneTemplate clones template into a new instance and waits for the clone
+// task to fully finish - including Proxmox's own pool-add step - before
+// releasing ig.cloneMu. That step takes a cluster-wide pmxcfs lock
+// (cfs-lock 'file-user_cfg') that isn't scoped per pool, so running clones
+// concurrently (even across separate Increase calls) reliably trips "got
+// lock request timeout" under load; since pmxcfs backs all of /etc/pve, that
+// contention also starves unrelated pmxcfs-backed operations like the web
+// UI/API. Holding the mutex for the task's entire lifetime, not just the API
+// call that starts it, fully serializes clones end-to-end and avoids this.
+func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.VirtualMachine) (int, error) {
 	cloneOptions, err := ig.getTemplateCloneOptions(template)
 	if err != nil {
-		return -1, nil, err
+		return -1, err
 	}
 
-	cloneMu.Lock()
-	defer cloneMu.Unlock()
+	ig.cloneMu.Lock()
+	defer ig.cloneMu.Unlock()
 
 	VMID, task, err := template.Clone(ctx, cloneOptions)
 	if err != nil {
-		return -1, nil, fmt.Errorf("failed to clone the template: %w", err)
+		return -1, fmt.Errorf("failed to clone the template: %w", err)
 	}
 
-	return VMID, task, nil
+	if err := waitForTask(ctx, task, nil, proxmoxTaskWaitTimeout); err != nil {
+		return VMID, fmt.Errorf("failed to wait for clone task: %w", err)
+	}
+
+	return VMID, nil
 }
 
 func (ig *InstanceGroup) getTemplateCloneOptions(template *proxmox.VirtualMachine) (*proxmox.VirtualMachineCloneOptions, error) {
