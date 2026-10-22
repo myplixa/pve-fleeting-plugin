@@ -150,8 +150,10 @@ func (ig *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings
 	ig.startRemovedInstanceCollector()
 
 	return provider.ProviderInfo{
-		ID:      path.Join("proxmox", ig.Settings.Name, ig.Settings.Pool),
-		MaxSize: MaxInstances,
+		ID:        path.Join("proxmox", ig.Settings.Name, ig.Settings.Pool),
+		MaxSize:   MaxInstances,
+		Version:   Version.String(),
+		BuildInfo: Version.BuildInfo(),
 	}, nil
 }
 
