@@ -238,8 +238,9 @@ You **MUST** create a **DEDICATED** user, pool, storage and API token for usage 
 After creating a **DEDICATED** user, pool and storage, follow the procedure below:
 
 1. Add the template VM as a member of the pool.
-2. Add the following role for the user on the pool, with propagation enabled:
-   * `PVEVMAdmin`.
+2. Add the following roles for the user on the pool, with propagation enabled:
+   * `PVEVMAdmin` — to clone, configure and manage the fleet VMs.
+   * `PVEPoolUser` — for `Pool.Audit` only. The plugin resolves the pool via `GET /pools/<pool>` at provisioner start-up and on every `Instances()`/`Update()` call, and `PVEVMAdmin` does **not** include `Pool.Audit`. Without the second role the plugin never starts and GitLab Runner reports every runner as **Offline** (jobs with its tags stay `pending`) with `failed to get pool id='<pool>': not authorized to access endpoint`.
 3. Add the following role for the user on the storage:
    * `PVEDatastoreUser`.
 4. Add the following role for the user, without propagation, on the node:
@@ -251,6 +252,7 @@ After creating a **DEDICATED** user, pool and storage, follow the procedure belo
 ```shell
 pveum user add fleeting@pve --comment "fleeting-plugin-proxmox automation"
 pveum acl modify /pool/<pool> -user fleeting@pve -role PVEVMAdmin
+pveum acl modify /pool/<pool> -user fleeting@pve -role PVEPoolUser   # Pool.Audit
 pveum acl modify /storage/<storage> -user fleeting@pve -role PVEDatastoreUser
 pveum acl modify /nodes/<node> -user fleeting@pve -role PVEAuditor -propagate 0
 pveum acl modify /sdn/zones/localnetwork -user fleeting@pve -role PVESDNUser
